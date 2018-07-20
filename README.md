@@ -22,12 +22,12 @@
 
 ## Memory bencmarks
 The best combinations are
-SBATCH --cpus-per-task=4 and #SBATCH --mem=64GB
+* SBATCH --cpus-per-task=4 and #SBATCH --mem=64GB
 or
-SBATCH --cpus-per-task=12 and #SBATCH --mem=192GB
+* SBATCH --cpus-per-task=12 and #SBATCH --mem=192GB
 
 If the alignment or mark duplication step consumes more memory, choose
-SBATCH --cpus-per-task=4 and #SBATCH --mem=192GB
+* SBATCH --cpus-per-task=4 and #SBATCH --mem=192GB
 
 
 ## Single End vs Pairs
