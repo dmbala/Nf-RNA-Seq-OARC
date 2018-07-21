@@ -1,6 +1,6 @@
 
 # RNA sequence analysis pipeline using nextflow. 
-
+<img src="https://github.com/dmbala/Nf-RNA-Seq-OARC/blob/master/Fig/dag-flowchart.png" width="450px" height="350px" />
 
 ## Files in the repo
  * rna-seq-v5.nf: main pipeline
