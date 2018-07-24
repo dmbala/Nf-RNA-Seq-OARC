@@ -31,6 +31,6 @@ If the alignment or mark duplication step consumes more memory, choose
 
 
 ## Single End vs Pairs
-params.SingleEnd = "true" for single end
-params.SingleEnd = "false" for pairs. 
+-params.SingleEnd = "true" for single end
+-params.SingleEnd = "false" for pairs. 
 
