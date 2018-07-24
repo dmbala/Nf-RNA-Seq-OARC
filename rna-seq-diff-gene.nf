@@ -15,34 +15,11 @@
  #
 */
 
-/* * Define the location of fastq files */
-params.reads = "/scratch/rw409/oarc/skin/2w*_R*.fastq.gz"
-
-/* Prepare the target.csv file for differential gene expression. Both edgeR and DESeq2 use this file. */
-params.target_file = "${PWD}/target.csv"
-
-/* Data from reference genome, Hisat index, and Bed files. */
-params.genome = "/projects/community/genomics_references/Mus_musculus/NCBI/GRCm38/Sequence/WholeGenomeFasta"
-params.gtf = "/projects/community/genomics_references/Mus_musculus/NCBI/GRCm38/Annotation/Genes/genes.gtf"
-params.hisat2_index_base="/projects/community/genomics_references/HISAT2_index/mm10/genome"
-params.bed = "/scratch/rw409/TestPipeline/Bed/Mus_musculus_NCBI_GRCm38.bed"
-
-/* Results are collected in this directory */
-params.outdir ="${PWD}/results"
 
 /* Locations of external programs (rest available via modules) */
 Program_Dir = "/projects/oarc/NF-Seq/"
 
-/* Lets stick with this option. Maybe we will have more options later. */
-params.aligner = "hisat2"
-params.do_trimgalore = "true"
 
-/* here we define default cpus, and pass the value from the job file" */
-params.task_cpus = 1
-
-/*this is for singleEnd" */
-
-params.SingleEnd = "true" 
 Channel
     .fromFilePairs( params.reads, size: params.SingleEnd ? 1 : 2 )
     .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB" }
@@ -68,6 +45,10 @@ process fastqc {
     $Program_Dir/FastQC/fastqc -q $reads
     """
 }
+
+/*
+ * STEP 2 - Remove adaptors with Trimgalore
+ */
 
 // Custom trimming options
 clip_r1 = 0
@@ -121,7 +102,7 @@ if (params.do_trimgalore == "false" ) {
 }
 
 /*
- * STEP 2 - align with HISAT2
+ * STEP 3 - align with HISAT2
  */
 
 
@@ -205,13 +186,34 @@ if(params.aligner == 'hisat2'){
 bam_ch1.subscribe {println "bam outputs copied: $it"}
 
 /*
- * STEP 3 - RSeQC analysis
+ * STEP 4 Build BED12 file
  */
 
 
-Channel.fromPath(params.bed)
-       .ifEmpty { exit 1, "BED12 annotation file not found: ${params.bed12}" }
-       .into {bed12_file; bed_rseqc; bed_genebody_coverage}
+Channel.fromPath(params.gtf)
+       .ifEmpty { exit 1, "gtf file not found: ${params.gtf}" }
+       .into {gtf_file; gtf_to_bed}
+
+process makeBED12 {
+        tag "gen-bed"
+        publishDir "${params.outdir}/BedFile", mode: 'copy'
+
+        input:
+        file gtf from gtf_to_bed
+
+        output:
+        file "${gtf.baseName}.bed" into bed_rseqc, bed_genebody_coverage
+
+        script: 
+        """
+        ${Program_Dir}/gtftobed-tool/gtftobed $gtf > ${gtf.baseName}.bed
+        """
+}
+
+
+/*
+ * STEP 5 - RSeQC analysis
+ */
 
 process rseqc {
     tag "${bam_rseqc.baseName - '.sorted'}"
@@ -246,7 +248,7 @@ process rseqc {
 
     input:
     file bam_rseqc
-    file bed12 from bed12_file
+    file bed12 from bed_rseqc
 
     output:
     file "*.{txt,pdf,r,xls}" into rseqc_results
@@ -318,7 +320,7 @@ process genebody_coverage {
 }
 
 /*
- * STEP 4 Mark duplicates
+ * STEP 6 Mark duplicates
  */
 process markDuplicates {
     tag "${bam.baseName - '.sorted'}"
@@ -350,7 +352,7 @@ process markDuplicates {
 }
 
 /*
- * STEP 5 Feature counts
+ * STEP 7 Feature counts
  */
 
 gtf_file = file(params.gtf)
@@ -388,7 +390,7 @@ process featureCounts {
 
 
 /*
- * STEP 6 - Merge featurecounts
+ * STEP 8 - Merge featurecounts
  */
 process merge_featureCounts {
     tag "${input_files[0].baseName - '.sorted'}"
@@ -409,7 +411,7 @@ process merge_featureCounts {
 
 
 /*
- * STEP 7 - edgeR MDS and heatmap
+ * STEP 9 - edgeR MDS and heatmap
  */
 Channel
     .fromPath(params.target_file)
@@ -435,7 +437,7 @@ process edgeR_sample_correlation {
 }
 
 /*
- * STEP 8 - Deseq2 analysis 
+ * STEP 10 - Deseq2 analysis 
  */
 
 process Deseq2_sample_correlation {
@@ -457,7 +459,7 @@ process Deseq2_sample_correlation {
 }
 
 /*
- * STEP 9 MultiQC
+ * STEP 11 MultiQC
  */
 process multiqc {
     tag "$prefix"
