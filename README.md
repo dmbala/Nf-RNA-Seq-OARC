@@ -10,15 +10,17 @@
  * RNA-seq-nf.html: pipeline MultiQC results
 
 ## Major steps 
- * STEP 1 FastQC
- * STEP 2 align with HISAT2
- * STEP 3 RSeQC analysis
- * STEP 4 Mark duplicates
- * STEP 5 Feature counts
- * STEP 6 Merge featurecounts
- * STEP 7 edgeR MDS and heatmap
- * STEP 8 Deseq2 analysis 
- * STEP 9 MultiQC
+ * STEP 1 Quality control check with FastQC
+ * STEP 2 Remove adaptors with trimgalore
+ * STEP 3 Align with HISAT2
+ * STEP 4 Generate BED from gtf file
+ * STEP 5 Perform RSeQC analysis after alighment
+ * STEP 6 Mark duplicates
+ * STEP 7 Feature counts
+ * STEP 8 Merge featurecounts
+ * STEP 9 edgeR MDS and heatmap
+ * STEP 10 Deseq2 analysis 
+ * STEP 11 MultiQC
 
 ## Memory bencmarks
 The best combinations are
