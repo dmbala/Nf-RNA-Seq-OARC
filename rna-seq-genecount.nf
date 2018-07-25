@@ -47,7 +47,7 @@ Channel
 ch_print.subscribe {println "read_pairs: $it"}
 
 /*
- * STEP 1 - FastQC
+ * STEP 1 Quality Control with FastQC
  */
 process fastqc {
     tag "$name"
@@ -65,6 +65,10 @@ process fastqc {
     $Program_Dir/FastQC/fastqc -q $reads
     """
 }
+
+/*
+ * STEP 2  Remove adaptors with Trimgalore
+ */
 
 // Custom trimming options
 clip_r1 = 0
@@ -118,7 +122,7 @@ if (params.do_trimgalore == "false" ) {
 }
 
 /*
- * STEP 2 - align with HISAT2
+ * STEP 3  Align with HISAT2
  */
 
 
@@ -201,14 +205,37 @@ if(params.aligner == 'hisat2'){
 }
 bam_ch1.subscribe {println "bam outputs copied: $it"}
 
+
 /*
- * STEP 3 - RSeQC analysis
+ * STEP4 Build BED12 file
  */
 
 
-Channel.fromPath(params.bed)
-       .ifEmpty { exit 1, "BED12 annotation file not found: ${params.bed12}" }
-       .into {bed12_file; bed_rseqc; bed_genebody_coverage}
+Channel.fromPath(params.gtf)
+       .ifEmpty { exit 1, "gtf file not found: ${params.gtf}" }
+       .into {gtf_file; gtf_to_bed}
+
+process makeBED12 {
+        tag "gen-bed"
+        publishDir "${params.outdir}/BedFile", mode: 'copy'
+
+        input:
+        file gtf from gtf_to_bed
+
+        output:
+        file "${gtf.baseName}.bed" into bed_rseqc, bed_genebody_coverage
+
+        script:
+        """
+        ${Program_Dir}/gtftobed-tool/gtftobed $gtf > ${gtf.baseName}.bed
+        """
+}
+
+
+
+/*
+ * STEP 5 RSeQC analysis
+ */
 
 process rseqc {
     tag "${bam_rseqc.baseName - '.sorted'}"
@@ -243,7 +270,7 @@ process rseqc {
 
     input:
     file bam_rseqc
-    file bed12 from bed12_file
+    file bed12 from bed_rseqc 
 
     output:
     file "*.{txt,pdf,r,xls}" into rseqc_results
@@ -273,7 +300,7 @@ process rseqc {
 
 
 /*
- * Step 4.1 Rseqc genebody_coverage with subsampling
+ * Step 6 Rseqc genebody_coverage with subsampling
 */
 
 process genebody_coverage {
@@ -315,7 +342,7 @@ process genebody_coverage {
 }
 
 /*
- * STEP 4 Mark duplicates
+ * STEP 6 Mark duplicates
  */
 process markDuplicates {
     tag "${bam.baseName - '.sorted'}"
@@ -347,7 +374,7 @@ process markDuplicates {
 }
 
 /*
- * STEP 5 Feature counts
+ * STEP 7 Feature counts
  */
 
 gtf_file = file(params.gtf)
@@ -385,7 +412,7 @@ process featureCounts {
 
 
 /*
- * STEP 6 - Merge featurecounts
+ * STEP 8 Merge featurecounts
  */
 process merge_featureCounts {
     tag "${input_files[0].baseName - '.sorted'}"
@@ -406,7 +433,7 @@ process merge_featureCounts {
 
 
 /*
- * STEP 7 MultiQC
+ * STEP 9 MultiQC
  */
 process multiqc {
     tag "$prefix"
