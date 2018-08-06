@@ -57,7 +57,7 @@ three_prime_clip_r1 = 0
 three_prime_clip_r2 = 0
 forward_stranded = false 
 reverse_stranded = false
-unstranded = false
+unstranded = true 
 
 if(params.do_trimgalore == 'true'){
     process trim_galore {
@@ -79,17 +79,13 @@ if(params.do_trimgalore == 'true'){
         file "*_fastqc.{zip,html}" into trimgalore_fastqc_reports
 
         script:
-        c_r1 = clip_r1 > 0 ? "--clip_r1 ${clip_r1}" : ''
-        c_r2 = clip_r2 > 0 ? "--clip_r2 ${clip_r2}" : ''
-        tpc_r1 = three_prime_clip_r1 > 0 ? "--three_prime_clip_r1 ${three_prime_clip_r1}" : ''
-        tpc_r2 = three_prime_clip_r2 > 0 ? "--three_prime_clip_r2 ${three_prime_clip_r2}" : ''
         if (params.SingleEnd) {
             """
-            $Program_Dir/TrimGalore/trim_galore --fastqc --gzip $c_r1 $tpc_r1 $reads
+            $Program_Dir/TrimGalore/trim_galore --fastqc --gzip $reads
             """
         } else {
             """
-            $Program_Dir/TrimGalore/trim_galore --paired --fastqc --gzip $c_r1 $c_r2 $tpc_r1 $tpc_r2 $reads
+            $Program_Dir/TrimGalore/trim_galore --paired --fastqc --gzip $reads
             """
         }
       
