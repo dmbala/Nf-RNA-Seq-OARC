@@ -19,12 +19,35 @@
 /* Locations of external programs (rest available via modules) */
 Program_Dir = "/projects/oarc/NF-Seq/"
 
+params.reads = "/projects/oarc/NF-Seq/SampleData/chrX_data/samples/*_{1,2}.fastq.gz"
+params.SingleEnd=false
+params.exp_design_file = "${PWD}/target.csv"
+
+params.genome = "/projects/community/genomics_references/Mus_musculus/NCBI/GRCm38/Sequence/WholeGenomeFasta/genome.fa"
+params.gtf = "/projects/community/genomics_references/Mus_musculus/NCBI/GRCm38/Annotation/Genes/genes.gtf"
+params.hisat2_index_base="/projects/oarc/NF-Seq/SampleData/chrX_data/indexes/chrX_tran"
+params.outdir = "${PWD}/results"
+params.task_cpus = 1
+params.do_trimgalore = true
+
+params.do_bbduk = false
+params.do_fastp = false
+params.do_de_edgeR = false
+params.do_de_deseq = true 
+
+params.aligner = "hisat2"
+// Strandedness options
+forward_stranded = false 
+reverse_stranded = false
+unstranded = true 
+
 
 Channel
     .fromFilePairs( params.reads, size: params.SingleEnd ? 1 : 2 )
     .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB" }
-    .into {read_files_fastqc; read_files_trimmomatic; read_files_trimm_galore; ch_print }
+    .into {read_files_fastqc; read_files_trim_galore; read_files_trim_bbduk; read_files_trim_fastp; ch_print }
 ch_print.subscribe {println "read_pairs: $it"}
+
 
 /*
  * STEP 1 - FastQC
@@ -47,22 +70,15 @@ process fastqc {
 }
 
 /*
- * STEP 2 - Remove adaptors with Trimgalore
+ * STEP 2A - Adaptor trimming and filtering (Trimgalore)
  */
 
-// Custom trimming options
-clip_r1 = 0
-clip_r2 = 0 
-three_prime_clip_r1 = 0
-three_prime_clip_r2 = 0
-forward_stranded = false 
-reverse_stranded = false
-unstranded = true 
 
-if(params.do_trimgalore == 'true'){
+if(params.do_trimgalore){
     process trim_galore {
-        tag "$name"
+        tag "Trimgalore"
         module "python/2.7.12"
+        afterScript = 'rm -rf *.clumped*.fastq.gz'
         publishDir "${params.outdir}/trim_galore", mode: 'copy',
             saveAs: {filename ->
                 if (filename.indexOf("_fastqc") > 0) "FastQC/$filename"
@@ -71,48 +87,188 @@ if(params.do_trimgalore == 'true'){
             }
 
         input:
-        set val(name), file(reads) from read_files_trimm_galore
+        set val(name), file(reads) from read_files_trim_galore
 
         output:
-        set val(name), file ("*fq.gz") into trimmed_reads
-        file "*trimming_report.txt" into trimgalore_results
-        file "*_fastqc.{zip,html}" into trimgalore_fastqc_reports
+        set val(name), file ("*trimmed.fq.gz") into trimmed_reads, check_trim_reads, trimmed_reads_fastqc
+        file "*trimming_report.txt" into trim_galore_results
+        file "*_fastqc.{zip,html}" into trim_galore_fastqc_reports
 
         script:
         if (params.SingleEnd) {
             """
-            $Program_Dir/TrimGalore/trim_galore --fastqc --gzip $reads
+            $Program_Dir/bbmap_38.20/clumpify.sh \\
+                in=$reads out=${name}.clumped.fastq.gz markduplicates subs=0
+            $Program_Dir/TrimGalore/trim_galore \\
+                --fastqc -q 20 --gzip ${name}.clumped.fastq.gz
+            rename _val_1.fq.gz _R1_trimmed.fq.gz *
             """
         } else {
             """
-            $Program_Dir/TrimGalore/trim_galore --paired --fastqc --gzip $reads
+            $Program_Dir/bbmap_38.20/clumpify.sh \\
+                in1=${reads[0]} in2=${reads[1]}   \\
+                out1=${name}.clumped_R1.fastq.gz out2=${name}.clumped_R2.fastq.gz \\
+                markduplicates subs=0
+            $Program_Dir/TrimGalore/trim_galore \\
+                --paired -q 20 --fastqc \\
+                --gzip ${name}.clumped_R1.fastq.gz ${name}.clumped_R2.fastq.gz
+            rename _val_1.fq.gz _R1_trimmed.fq.gz *
+            rename _val_2.fq.gz _R2_trimmed.fq.gz *
             """
         }
-      
+
     }
 }
 
-if (params.do_trimgalore == "false" ) {
-    read_files_trimm_galore.into{trimmed_reads; check_reads}
-    check_reads.subscribe {println "trim avoided read: $it"}
+/*
+ * STEP 2B - Adaptor trimming and filtering (bbduk)
+ */
+
+if(params.do_bbduk){
+    process trim_bbduk {
+        tag "BBDUK"
+        module "java/1.8.0_161"
+        afterScript = 'rm -rf *.clumped*.fastq.gz'
+        publishDir "${params.outdir}/trim_bbduk", mode: 'copy',
+            saveAs: {filename ->
+                if (filename.indexOf(".out") > 0) "$filename"
+                else null
+            }
+
+        input:
+        set val(name), file(reads) from read_files_trim_bbduk
+
+        output:
+        set val(name), file ("*trimmed.fq.gz") into trimmed_reads, check_trim_reads, trimmed_reads_fastqc
+        set val(name), file ("*.out") into trim_bbduk_results
+
+        script:
+        if (params.SingleEnd) {
+            """
+            echo "SingleEnd"
+            $Program_Dir/bbmap_38.20/clumpify.sh \\
+                in=${reads} out=${name}.clumped.fastq.gz \\
+                markduplicates subs=0
+            $Program_Dir/bbmap_38.20/bbduk.sh -Xmx8g qin=auto \\
+                in=${name}.clumped.fastq.gz \\
+                out=${name}_trimmed.fq.gz \\
+                ref=$Program_Dir/bbmap_38.20/resources/adapters.fa \\
+                stats=${name}.stats.out aqhist=${name}_aqhist.out \\
+                ktrim=r k=23 mink=11 hdist=1 tpe tbo qtrim=r trimq=20 ziplevel=9
+            """
+        } else {
+            """
+            $Program_Dir/bbmap_38.20/clumpify.sh \\
+                in1=${reads[0]} in2=${reads[1]}   \\
+                out1=${name}.clumped_R1.fastq.gz out2=${name}.clumped_R2.fastq.gz \\
+                markduplicates subs=0
+            $Program_Dir/bbmap_38.20/bbduk.sh -Xmx8g qin=auto \\
+                in1=${name}.clumped_R1.fastq.gz in2=${name}.clumped_R2.fastq.gz \\
+                out1=${name}_R1_trimmed.fq.gz out2=${name}_R2_trimmed.fq.gz \\
+                ref=$Program_Dir/bbmap_38.20/resources/adapters.fa \\
+                stats=${name}_stats.out aqhist=${name}_aqhist.out \\
+                ktrim=r k=23 mink=11 hdist=1 tpe tbo qtrim=r trimq=20 ziplevel=9
+            """
+        }
+    }
+check_trim_reads.subscribe {println "trimed read: $it"}
 }
 
 /*
- * STEP 3 - align with HISAT2
+ * STEP 2C - Adaptor trimming and filtering (fastp)
  */
 
+if(params.do_fastp){
+    process trim_fastp {
+        tag "fastp-trimm"
+        afterScript = 'rm -rf *.clumped*.fastq.gz'
+        module "gcc/5.4"
+        publishDir "${params.outdir}/trim_fastp", mode: 'copy',
+            saveAs: {filename ->
+                if (filename.indexOf("_out.html") > 0) "$filename"
+                else if (filename.indexOf("_out.json") > 0) "$filename"
+                else null
+            }
+
+        input:
+        set val(name), file(reads) from read_files_trim_fastp
+
+
+        output:
+        set val(name), file ("*trimmed.fq.gz") into trimmed_reads, check_trim_reads, trimmed_reads_fastqc
+        set val(name), file ("*_out.*") into trim_fastp_results
+
+        script:
+        afterScript = 'rm -rf ${name}.clumped*.fastq.gz'
+        if (params.SingleEnd) {
+            """
+            echo "SingleEnd"
+            $Program_Dir/bbmap_38.20/clumpify.sh \\
+                in=${reads} out=${name}.clumped.fastq.gz \\
+                markduplicates subs=0
+            $Program_Dir/fastp/fastp -i ${name}.clumped.fastq.gz \\
+                -o ${name}_trimmed.fq.gz \\
+                -h ${name}_fastp_out.html \\
+                -j ${name}_fastp_out.json -z 9
+            """
+        } else {
+            """
+            $Program_Dir/bbmap_38.20/clumpify.sh \\
+                in1=${reads[0]} in2=${reads[1]}   \\
+                out1=${name}.clumped_R1.fastq.gz out2=${name}.clumped_R2.fastq.gz \\
+                markduplicates subs=0
+            $Program_Dir/fastp/fastp -i ${name}.clumped_R1.fastq.gz \\
+                -I ${name}.clumped_R2.fastq.gz -c \\
+                -o ${name}_R1_trimmed.fq.gz -O ${name}_R2_trimmed.fq.gz \\
+                -h ${name}_fastp_out.html \\
+                -j ${name}_fastp_out.json -z 9
+            """
+        }
+    }
+check_trim_reads.subscribe {println "trimed read: $it"}
+}
+
+/*
+ * STEP 3 - Quality control with FastQC after Trim
+ */
+
+process trimmed_fastqc {
+    tag "trimmed_FastQC"
+    publishDir "${params.outdir}/trimmed_fastqc", mode: 'copy',
+        saveAs: {filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"}
+
+    input:
+    set val(name), file(reads) from trimmed_reads_fastqc
+
+    output:
+    file "*_fastqc.{zip,html}" into trimmed_fastqc_results
+
+    script:
+    """
+    $Program_Dir/FastQC/fastqc -q $reads
+    """
+}
+
+if (!params.do_trimgalore && !params.do_bbduk && !params.do_fastp) {
+    read_files_trim_galore.into{trimmed_reads; check_trim_reads}
+    check_trim_reads.subscribe {println "trim avoided read: $it"}
+}
+
+
+/*
+ * STEP 4 - align with HISAT2
+ */
 
 hisat2_index_base = params.hisat2_index_base
-if(params.aligner == 'hisat2'){
+if(params.aligner == "hisat2"){
     process hisat2Align {
         tag "Hisat2 alignment"
         module "samtools/1.3.1:HISAT2/2.1.0"
         publishDir "${params.outdir}/HISAT2", mode: 'copy',
-            saveAs: {filename ->
+            saveAs: { filename ->
                 if (filename.indexOf(".hisat2_summary.txt") > 0) "logs/$filename"
                 else null
             }
-      
 
         input:
         set val(name), file(reads) from trimmed_reads
@@ -160,7 +316,7 @@ if(params.aligner == 'hisat2'){
     process hisat2_sortOutput {
         tag "HISAT2 sort"
         module "samtools/1.3.1:HISAT2/2.1.0"
-        publishDir "${params.outdir}/HISAT2", mode: 'copy',
+        publishDir "${params.outdir}/HISAT2", mode: 'symlink',
             saveAs: { filename -> "aligned_sorted/$filename" }
 
         input:
@@ -182,7 +338,7 @@ if(params.aligner == 'hisat2'){
 bam_ch1.subscribe {println "bam outputs copied: $it"}
 
 /*
- * STEP 4 Build BED12 file
+ * STEP 5 Build BED12 file
  */
 
 
@@ -208,7 +364,7 @@ process makeBED12 {
 
 
 /*
- * STEP 5 - RSeQC analysis
+ * STEP 6 - RSeQC analysis
  */
 
 process rseqc {
@@ -274,7 +430,7 @@ process rseqc {
 
 
 /*
- * Step 4.1 Rseqc genebody_coverage with subsampling
+ * Step 6a Rseqc genebody_coverage with subsampling
 */
 
 process genebody_coverage {
@@ -316,13 +472,17 @@ process genebody_coverage {
 }
 
 /*
- * STEP 6 Mark duplicates
+ * STEP 7 Mark duplicates
  */
 process markDuplicates {
     tag "${bam.baseName - '.sorted'}"
     module "java:samtools"
     publishDir "${params.outdir}/markDuplicates", mode: 'copy',
-        saveAs: {filename -> filename.indexOf("_metrics.txt") > 0 ? "metrics/$filename" : "$filename"}
+        saveAs: {filename -> 
+            if (filename.indexOf("_metrics.txt") > 0) "$filename"
+            else null 
+            }
+
 
     input:
     file bam from bam_markduplicates
@@ -409,68 +569,82 @@ process merge_featureCounts {
 /*
  * STEP 9 - edgeR MDS and heatmap
  */
+
+if (params.do_de_edgeR) {
 Channel
-    .fromPath(params.target_file)
+    .fromPath(params.exp_design_file)
     .ifEmpty { exit 1, "Cannot find any reads matching:" }
-    .into {read_file_target_edgeR; read_file_target_deseq2}
+    .into {read_file_target_edgeR}
 
-process edgeR_sample_correlation {
-    tag "EdgeR analysis on count file"
-    module "intel/17.0.4:R-Project/3.4.1"
-    publishDir "${params.outdir}/edgeR_sample_correlation", mode: 'copy'
+    process edgeR_explore {
+        tag "EdgeR exploration analysis on count file"
+        module "intel/17.0.4:R-Project/3.4.1"
+        publishDir "${params.outdir}/edgeR_exploration", mode: 'copy'
 
-    input:
-    file merged_file from merged_count_edr
-    file target_input from read_file_target_edgeR
+        input:
+        file merged_file from merged_count_edr
+        file target_input from read_file_target_edgeR
 
-    output:
-    file "*.{txt,pdf,csv}" into edgeR_sample_correlation_results
+        output:
+        file "*.{txt,pdf,csv}" into edgeR_files
 
-    script: // This script is bundled with the pipeline, in NGI-RNAseq/bin/
-    """
-    Rscript ${Program_Dir}/DE/edgeR_rna-seq.r 
-    """
+        script: // This script is bundled with the pipeline, in NGI-RNAseq/bin/
+        """
+        Rscript ${Program_Dir}/DE/edgeR_rna-seq_explore.r $merged_file $target_input
+        """
+    }
 }
 
 /*
  * STEP 10 - Deseq2 analysis 
  */
 
-process Deseq2_sample_correlation {
-    tag "Deseq2 analysis on count file"
-    module "intel/17.0.4:R-Project/3.4.1"
-    publishDir "${params.outdir}/deseq2_sample_correlation", mode: 'copy'
+if(params.do_de_deseq) {
+Channel
+    .fromPath(params.exp_design_file)
+    .ifEmpty { exit 1, "Cannot find any reads matching:" }
+    .into {read_file_target_deseq2}
 
-    input:
-    file merged_file from merged_count_deseq2
-    file target_input from read_file_target_deseq2
+    process Deseq2_sample_correlation {
+        tag "Deseq2 analysis on count file"
+        module "intel/17.0.4:R-Project/3.4.1"
+        publishDir "${params.outdir}/deseq2_analysis", mode: 'copy'
 
-    output:
-    file "*.{txt,pdf,csv}" into deseq2_sample_correlation_results
+        input:
+        file merged_file from merged_count_deseq2
+        file target_input from read_file_target_deseq2
 
-    script: // This script is bundled with the pipeline, in NGI-RNAseq/bin/
-    """
-    Rscript ${Program_Dir}/DE/deseq2_rna-seq.r 
-    """
+        output:
+        file "*.{txt,pdf,csv}" into deseq2_files
+
+        script: 
+        """
+        Rscript ${Program_Dir}/DE/deseq2_rna-seq.r $merged_file $target_input
+        """
+    }
 }
 
 /*
  * STEP 11 MultiQC
  */
 process multiqc {
-    tag "$prefix"
+    tag "multiqc-results"
     module "intel/17.0.2:python/2.7.12"
     publishDir "${params.outdir}/FullReport-MultiQC", mode: 'copy'
 
     input:
     file (fastqc:'fastqc/*') from fastqc_results.collect()
-    file ('trimgalore/*') from trimgalore_results.collect()
+    if (params.do_trimgalore) "file ('trim_galore/*') from trim_galore_results.collect()"
+    if (params.do_bbduk) "file ('trim_bbduk/*') from trim_bbduk_results.collect()"
+    if (params.do_fastp) "file ('trim_fastp/*') from trim_fastp_results.collect()"
+    file ('trimmed_fastqc/*') from trimmed_fastqc_results.collect()
     file ('alignment/*') from alignment_logs.collect()
     file ('rseqc/*') from rseqc_results.collect()
     file ('rseqc/*') from genebody_coverage_results.collect()
     file ('featureCounts/*') from featureCounts_logs.collect()
-    file ('edgeR_sample_correlation_results/*') from edgeR_sample_correlation_results.toList() // toList() as process optional
-    file ('deseq2_sample_correlation_results/*') from deseq2_sample_correlation_results.toList() // toList() as process optional
+//toList() as process optional
+    if (params.do_de_edgeR) "file ('edgeR_exploration/*') from edgeR_files.toList()" 
+    if (params.do_de_deseq) "file ('deseq2_analysis/*') from deseq2_files.toList()"  
 
     output:
     file "*multiqc_report.html" into multiqc_report
